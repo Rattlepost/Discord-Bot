@@ -35,6 +35,9 @@ async def on_message(message):
         await message.delete()
         await message.channel.send(f"{message.author.mention} dont use that word!")
 
+    if "damn" in message.content.lower():
+        await message.channel.send("Damn Daniel!")
+
     await bot.process_commands(message)
 
 # !hello
