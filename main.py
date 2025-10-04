@@ -3,6 +3,7 @@ from discord.ext import commands
 import logging
 from dotenv import load_dotenv
 import os
+import webserver
 
 load_dotenv()  # Load environment variables from .env file
 token = os.getenv('DISCORD_TOKEN')
@@ -86,4 +87,5 @@ async def poll(ctx, *, question):
     await poll_message.add_reaction("👎")
 
 # Runs the bot
+webserver.keep_alive()
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
