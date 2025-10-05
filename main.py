@@ -14,7 +14,7 @@ token = os.getenv('DISCORD_TOKEN')
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 # Other constants
-DATE_FORMAT = "%m/%d/%Y"
+DATE_FORMAT = "%m-%d-%Y"
 
 # Users
 ZIREN1236 = 314500928290160640  # <-- replace with the user ID to receive the DM
@@ -132,16 +132,12 @@ async def run_weekly_job():
         except Exception as e:
             logging.exception("Error reading users for %s: %s", emoji, e)
 
+    date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
+
     # --- 5) Build DM summary (per-option counts + per-user selections) ---
     if not user_choices:
         summary_text = "No participants reacted today."
     else:
-        # Per-option unique-user counts
-        option_counts = {label: 0 for _, label in actions}
-        for choices in user_choices.values():
-            for _, label in choices:
-                option_counts[label] += 1
-
         # Per-user lines (try to include display name)
         per_user_lines = []
         for uid, choices in user_choices.items():
@@ -154,7 +150,7 @@ async def run_weekly_job():
             try:
                 member = channel.guild.get_member(uid) or await channel.guild.fetch_member(uid)
                 if member and member.display_name:
-                    name = f"{member.display_name} (<@{uid}>)"
+                    name = f"<@{uid}>"
             except Exception:
                 pass
 
@@ -162,12 +158,9 @@ async def run_weekly_job():
 
         per_user_lines.sort(key=lambda s: s.lower())
 
-        count_lines = [f"**{label}** — {option_counts[label]} participant(s)" for _, label in actions]
 
         summary_text = "\n".join([
-            "**Downtime Reactions Summary (all selections recorded)**",
-            "",
-            *count_lines,
+            f"## Downtime Actions for {date_str}",
             "",
             "**Per-user selections:**",
             *per_user_lines
@@ -182,7 +175,7 @@ async def run_weekly_job():
     except Exception as e:
         logging.exception("Failed to DM summary: %s", e)
 
-    date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
+   
 
     try:
         await poll_message.delete()
@@ -231,39 +224,73 @@ async def run_weekly_job_test():
         await poll_message.add_reaction(emoji)
 
     # ----- TEST WAIT -----
-    await asyncio.sleep(30)  # only 30 seconds instead of all day
+    await asyncio.sleep(10)  # only 10 seconds instead of all day
 
-    poll_message = await channel.fetch_message(poll_message.id)
+    try:
+        poll_message = await channel.fetch_message(poll_message.id)
+    except Exception as e:
+        logging.exception("Failed to refetch poll message: %s", e)
+        return
 
-    # collect all reactions
+    # Map: user_id -> set of (emoji, label)
     user_choices: dict[int, set[tuple[str, str]]] = {}
+
     for emoji, label in actions:
         react = discord.utils.get(poll_message.reactions, emoji=emoji)
         if not react:
             continue
-        async for user in react.users(limit=None):
-            if user.bot:
-                continue
-            user_choices.setdefault(user.id, set()).add((emoji, label))
-
-    # summary text
-    if not user_choices:
-        summary_text = "No participants reacted in the 30-second test window."
-    else:
-        lines = []
-        for uid, choices in user_choices.items():
-            pretty = ", ".join(f"{e} {l}" for e, l in choices)
-            name = f"<@{uid}>"
-            lines.append(f"- {name}: {pretty}")
-        summary_text = "\n".join([
-            "**TEST SUMMARY**",
-            *lines
-        ])
-
-    target_user = await bot.fetch_user(RATTLEPOST)
-    await target_user.send(summary_text)
+        try:
+            async for user in react.users(limit=None):
+                if getattr(user, "bot", False):
+                    continue
+                user_choices.setdefault(user.id, set()).add((emoji, label))
+        except Exception as e:
+            logging.exception("Error reading users for %s: %s", emoji, e)
 
     date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
+
+    # --- 5) Build DM summary (per-option counts + per-user selections) ---
+    if not user_choices:
+        summary_text = "No participants reacted today."
+    else:
+        # Per-user lines (try to include display name)
+        per_user_lines = []
+        for uid, choices in user_choices.items():
+            # Order their choices by our actions order
+            order_index = {e: i for i, (e, _) in enumerate(actions)}
+            ordered = sorted(choices, key=lambda x: order_index.get(x[0], 999))
+            pretty = ", ".join(f"{e} {l}" for e, l in ordered)
+
+            name = f"<@{uid}>"
+            try:
+                member = channel.guild.get_member(uid) or await channel.guild.fetch_member(uid)
+                if member and member.display_name:
+                    name = f"<@{uid}>"
+            except Exception:
+                pass
+
+            per_user_lines.append(f"- {name}: {pretty}")
+
+        per_user_lines.sort(key=lambda s: s.lower())
+
+
+        summary_text = "\n".join([
+            f"## Downtime Actions for {date_str}",
+            "",
+            "**Per-user selections:**",
+            *per_user_lines
+        ])
+
+    # --- 6) DM the summary to the target user ---
+    try:
+        target_user = await bot.fetch_user(RATTLEPOST)
+        await target_user.send(summary_text)
+    except discord.Forbidden:
+        logging.warning("Cannot DM target user (Forbidden).")
+    except Exception as e:
+        logging.exception("Failed to DM summary: %s", e)
+
+   
 
     try:
         await poll_message.delete()
@@ -275,6 +302,7 @@ async def run_weekly_job_test():
     try:
         await channel.send(f"Downtime Actions for {date_str} have closed.")
         await channel.send(f"If you missed them, you will have to wait for next week.")
+        
     except Exception as e:
         logging.exception("Failed to send closing notice: %s", e)
 
