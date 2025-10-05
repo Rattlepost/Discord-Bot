@@ -15,6 +15,7 @@ handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w'
 
 # Users
 ZIREN1236 = 314500928290160640  # <-- replace with the user ID to receive the DM
+RATTLEPOST = 499200328399323186
 
 # Channels
 THE_CROSSROADS = 1420451034639110278
@@ -240,8 +241,23 @@ async def run_weekly_job_test():
             *lines
         ])
 
-    target_user = await bot.fetch_user(ZIREN1236)
+    target_user = await bot.fetch_user(RATTLEPOST)
     await target_user.send(summary_text)
+
+    date_str = datetime.now(DETROIT).strftime("%Y-%m-%d")
+
+    try:
+        await poll_message.delete()
+    except discord.Forbidden:
+        logging.warning("Bot doesn't have permission to delete the poll message.")
+    except Exception as e:
+        logging.exception("Failed to delete poll message: %s", e)
+
+    try:
+        await channel.send(f"📌 This poll has ended for {date_str}.")
+    except Exception as e:
+        logging.exception("Failed to send closing notice: %s", e)
+
 
 @bot.command()
 async def test_poll(ctx):
