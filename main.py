@@ -40,5 +40,6 @@ async def setup_hook():
     await bot.load_extension("cogs.player_info")
     await bot.load_extension("cogs.admin_commands")
 
+
 # Runs the bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
