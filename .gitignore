@@ -1,3 +1,4 @@
 .env
 discord.log
 examples.txt
+player_info.db
