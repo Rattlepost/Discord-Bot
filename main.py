@@ -55,9 +55,9 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-@tasks.loop(time=time(10, 0, tzinfo=ZoneInfo("America/Detroit")))
+@tasks.loop(time=time(10, 0, tzinfo=ZoneInfo("DETROIT")))  # Every Sunday at 10:00 AM Detroit time
 async def weekly_sunday_job():
-    if datetime.datetime.now(ZoneInfo("America/Detroit")).weekday() == 6:
+    if datetime.datetime.now(ZoneInfo("DETROIT")).weekday() == 6:
         await run_weekly_job()
 
 async def run_weekly_job():
