@@ -8,7 +8,6 @@ import datetime
 from zoneinfo import ZoneInfo
 from datetime import datetime, time, timedelta
 import asyncio
-import sqlite3
 #endregion
 
 #region Setup and Variables ---------------------------------------------------------------------------------------------
@@ -19,11 +18,10 @@ token = os.getenv('DISCORD_TOKEN')
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 # SQLite
-DB_PATH = "player_info.db"      
-TABLE_NAME = "player_info"
-db_logger = logging.getLogger(DB_PATH)
-db_logger.setLevel(logging.DEBUG)
-db_logger.addHandler(handler)
+PLAYER_QUEST_ITEMS_PATH = "player_quest_items.db"
+PLAYER_QUEST_TABLE_NAME = "player_quest_items"
+PLAYER_INFO_PATH = "player_info.db"      
+PLAYER_INFO_TABLE_NAME = "player_info"
 
 
 # Other constants
@@ -50,8 +48,9 @@ intents.message_content = True
 intents.members = True
 intents.guild_scheduled_events = True
 
-
+# Bot
 bot = commands.Bot(command_prefix='!', intents=intents)
+
 #endregion
 
 #region Misc Events ---------------------------------------------------------------------------------------------------
@@ -70,159 +69,6 @@ async def on_message(message):
         await message.channel.send("Damn Daniel!")
 
     await bot.process_commands(message)
-#endregion
-
-#region Player Database Commands -----------------------------------------------------------------------------------------
-def get_db_connection():
-    try:
-        db_logger.debug("Connecting to DB at %r", DB_PATH)
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        conn.row_factory = sqlite3.Row  # access columns by name
-        return conn
-    except sqlite3.Error:
-        db_logger.exception("DB connect failed")
-        return None
-
-@bot.command()
-async def info(ctx, *, player_name: str):
-    requester = str(ctx.author.display_name)
-    rq_role = discord.utils.get(ctx.author.roles, id=GM_ROLE)
-    if rq_role is not None:
-        await player_info(ctx, player_name=player_name, type="GM")
-    elif requester == player_name:
-        await player_info(ctx, player_name=player_name, type="USER")
-    else:
-        await ctx.reply("You can only view your own info. GMs can view anyone's info.")
-async def player_info(ctx, *, player_name: str, type: str):
-
-    conn = get_db_connection()
-    if not conn:
-        await ctx.reply("Database connection failed. See logs for details.")
-        return
-    
-    cur = conn.cursor()
-    sql = f"SELECT LEVEL, GOLD, QUEST_POINTS FROM {TABLE_NAME} WHERE PLAYER = ?"
-    cur.execute(sql, (player_name,))
-    row = cur.fetchone()
-
-    if row is None:
-        db_logger.warning("No record for PLAYER=%r", player_name)
-        await ctx.reply(f"No player named `{player_name}` found.")
-        return
-
-    level = row["LEVEL"]
-    gold = row["GOLD"]
-    quest_points = row["QUEST_POINTS"]
-
-    embed = discord.Embed(
-        title=f"{player_name}",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Level", value=str(level), inline=True)
-    embed.add_field(name="Gold", value=str(gold), inline=True)
-    embed.add_field(name="QP", value=str(quest_points), inline=True)
-
-    if type == "GM":
-        channel = bot.get_channel(DM_HUSH_HUT)
-        await channel.send(embed=embed)
-    else:
-        await ctx.author.send(embed=embed)
-        await ctx.reply("I've sent your info in a DM!")
-
-    cur.close()
-    conn.close()
-
-@bot.command()
-@commands.has_role(GM_ROLE)
-async def addGold(ctx, player_name: str, amount: int):
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(f"SELECT GOLD FROM {TABLE_NAME} WHERE PLAYER = ?", (player_name,))
-    row = cur.fetchone()
-
-    if not row:
-        await ctx.reply(f"Player `{player_name}` not found.")
-        conn.close()
-        return
-
-    new_gold = row[0] + amount
-    cur.execute(f"UPDATE {TABLE_NAME} SET GOLD = ? WHERE PLAYER = ?", (new_gold, player_name))
-    conn.commit()
-    conn.close()
-
-    await ctx.reply(f"Gave {amount} gold to {player_name}.")
-
-@bot.command()
-@commands.has_role(GM_ROLE)
-async def rmGold(ctx, player_name: str, amount: int):
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(f"SELECT GOLD FROM {TABLE_NAME} WHERE PLAYER = ?", (player_name,))
-    row = cur.fetchone()
-
-    if not row:
-        await ctx.reply(f"Player `{player_name}` not found.")
-        conn.close()
-        return
-
-    new_gold = row[0] - amount
-    if new_gold < 0:
-        await ctx.reply(f"Cannot remove more than {amount} gold from {player_name}.")
-        conn.close()
-        return
-    cur.execute(f"UPDATE {TABLE_NAME} SET GOLD = ? WHERE PLAYER = ?", (new_gold, player_name))
-    conn.commit()
-    conn.close()
-
-    await ctx.reply(f"Removed {amount} gold from {player_name}.")
-
-@bot.command()
-async def giveGold(ctx, receiver: str, amount: int):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    giver = str(ctx.author.display_name)  # the command user’s server name
-
-    # get giver row
-    cur.execute(f"SELECT GOLD FROM {TABLE_NAME} WHERE PLAYER = ?", (giver,))
-    giver_row = cur.fetchone()
-    if not giver_row:
-        await ctx.reply(f"Giver `{giver}` not found in the database.")
-        conn.close()
-        return
-
-    giver_gold = giver_row[0]
-
-    # get receiver row
-    cur.execute(f"SELECT GOLD FROM {TABLE_NAME} WHERE PLAYER = ?", (receiver,))
-    receiver_row = cur.fetchone()
-    if not receiver_row:
-        await ctx.reply(f"Receiver `{receiver}` not found in the database.")
-        conn.close()
-        return
-
-    receiver_gold = receiver_row[0]
-
-    # prevent negative
-    if giver_gold < amount:
-        await ctx.reply(f"❌ You don’t have enough gold to trade {amount}.")
-        conn.close()
-        return
-
-    # update both
-    new_giver_gold = giver_gold - amount
-    new_receiver_gold = receiver_gold + amount
-
-    cur.execute(f"UPDATE {TABLE_NAME} SET GOLD = ? WHERE PLAYER = ?", (new_giver_gold, giver))
-    cur.execute(f"UPDATE {TABLE_NAME} SET GOLD = ? WHERE PLAYER = ?", (new_receiver_gold, receiver))
-    conn.commit()
-    conn.close()
-
-    await ctx.send(
-        f"💰 Trade complete!\n"
-        f"- {giver} → {receiver}: {amount} gold\n"
-    )
 #endregion
 
 #region Weekly Downtime Actions -----------------------------------------------------------------------------------------
@@ -361,7 +207,7 @@ async def run_weekly_job():
     except Exception as e:
         logging.exception("Failed to send closing notice: %s", e)
 
-@bot.command()
+@bot.command(hidden=True)
 async def test_poll(ctx):
     await run_weekly_job_test(ctx.author)
 async def run_weekly_job_test(author):
@@ -480,6 +326,9 @@ async def run_weekly_job_test(author):
         logging.exception("Failed to send closing notice: %s", e)
 #endregion
 
+@bot.event
+async def setup_hook():
+    await bot.load_extension("cogs.Player_Info")
 
 # Runs the bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

@@ -2,3 +2,5 @@
 discord.log
 examples.txt
 player_info.db
+player_quest_items.db
+__pycache__/
