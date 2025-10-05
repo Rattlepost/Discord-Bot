@@ -14,7 +14,7 @@ token = os.getenv('DISCORD_TOKEN')
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 # Other constants
-DATE_FORMAT = "%m-%d-%Y"
+
 
 # Users
 ZIREN1236 = 314500928290160640  # <-- replace with the user ID to receive the DM
@@ -55,9 +55,9 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-@tasks.loop(time=time(10, 0, tzinfo=ZoneInfo("DETROIT")))  # Every Sunday at 10:00 AM Detroit time
+@tasks.loop(time=time(10, 0, tzinfo=ZoneInfo("America/Detroit")))
 async def weekly_sunday_job():
-    if datetime.datetime.now(ZoneInfo("DETROIT")).weekday() == 6:
+    if datetime.datetime.now(ZoneInfo("America/Detroit")).weekday() == 6:
         await run_weekly_job()
 
 async def run_weekly_job():
@@ -182,7 +182,7 @@ async def run_weekly_job():
     except Exception as e:
         logging.exception("Failed to DM summary: %s", e)
 
-    date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
+    date_str = datetime.now(DETROIT).strftime("%Y-%m-%d")
 
     try:
         await poll_message.delete()
@@ -263,7 +263,7 @@ async def run_weekly_job_test():
     target_user = await bot.fetch_user(RATTLEPOST)
     await target_user.send(summary_text)
 
-    date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
+    date_str = datetime.now(DETROIT).strftime("%d-%m-%Y")
 
     try:
         await poll_message.delete()
@@ -278,8 +278,9 @@ async def run_weekly_job_test():
     except Exception as e:
         logging.exception("Failed to send closing notice: %s", e)
 
+
 @bot.command()
-async def test_poll():
+async def test_poll(ctx):
     await run_weekly_job_test()
 
 # Runs the bot
