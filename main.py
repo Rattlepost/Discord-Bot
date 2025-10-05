@@ -14,7 +14,7 @@ token = os.getenv('DISCORD_TOKEN')
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 # Other constants
-DATE_FORMAT = "%d-%m-%Y"
+DATE_FORMAT = "%m-%d-%Y"
 
 # Users
 ZIREN1236 = 314500928290160640  # <-- replace with the user ID to receive the DM
@@ -278,9 +278,8 @@ async def run_weekly_job_test():
     except Exception as e:
         logging.exception("Failed to send closing notice: %s", e)
 
-
 @bot.command()
-async def test_poll(ctx):
+async def test_poll():
     await run_weekly_job_test()
 
 # Runs the bot
