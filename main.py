@@ -191,7 +191,7 @@ async def run_weekly_job():
     except Exception as e:
         logging.exception("Failed to send closing notice: %s", e)
 
-async def run_weekly_job_test():
+async def run_weekly_job_test(author):
     """Test version: posts a downtime poll and collects reactions after 30 seconds."""
     actions = [
         ("🛠️", "Train a Trade"),
@@ -283,7 +283,7 @@ async def run_weekly_job_test():
 
     # --- 6) DM the summary to the target user ---
     try:
-        target_user = await bot.fetch_user(RATTLEPOST)
+        target_user = await bot.fetch_user(author.id)
         await target_user.send(summary_text)
     except discord.Forbidden:
         logging.warning("Cannot DM target user (Forbidden).")
@@ -309,7 +309,7 @@ async def run_weekly_job_test():
 
 @bot.command()
 async def test_poll(ctx):
-    await run_weekly_job_test()
+    await run_weekly_job_test(ctx.author)
 
 # Runs the bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
