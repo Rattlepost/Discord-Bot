@@ -13,6 +13,9 @@ token = os.getenv('DISCORD_TOKEN')
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
+# Other constants
+DATE_FORMAT = "%d-%m-%Y"
+
 # Users
 ZIREN1236 = 314500928290160640  # <-- replace with the user ID to receive the DM
 RATTLEPOST = 499200328399323186
@@ -179,7 +182,7 @@ async def run_weekly_job():
     except Exception as e:
         logging.exception("Failed to DM summary: %s", e)
 
-    date_str = datetime.now(DETROIT).strftime("%Y-%m-%d")
+    date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
 
     try:
         await poll_message.delete()
@@ -260,7 +263,7 @@ async def run_weekly_job_test():
     target_user = await bot.fetch_user(RATTLEPOST)
     await target_user.send(summary_text)
 
-    date_str = datetime.now(DETROIT).strftime("%d-%m-%Y")
+    date_str = datetime.now(DETROIT).strftime(DATE_FORMAT)
 
     try:
         await poll_message.delete()
