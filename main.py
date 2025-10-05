@@ -179,6 +179,22 @@ async def run_weekly_job():
     except Exception as e:
         logging.exception("Failed to DM summary: %s", e)
 
+    date_str = datetime.now(DETROIT).strftime("%Y-%m-%d")
+
+    try:
+        await poll_message.delete()
+    except discord.Forbidden:
+        logging.warning("Bot doesn't have permission to delete the poll message.")
+    except Exception as e:
+        logging.exception("Failed to delete poll message: %s", e)
+
+    try:
+        await channel.send(f"Downtime Actions for {date_str} have closed.")
+        await channel.send(f"If you missed them, you will have to wait for next week.")
+        
+    except Exception as e:
+        logging.exception("Failed to send closing notice: %s", e)
+
 async def run_weekly_job_test():
     """Test version: posts a downtime poll and collects reactions after 30 seconds."""
     actions = [
@@ -254,7 +270,8 @@ async def run_weekly_job_test():
         logging.exception("Failed to delete poll message: %s", e)
 
     try:
-        await channel.send(f"📌 This poll has ended for {date_str}.")
+        await channel.send(f"Downtime Actions for {date_str} have closed.")
+        await channel.send(f"If you missed them, you will have to wait for next week.")
     except Exception as e:
         logging.exception("Failed to send closing notice: %s", e)
 
