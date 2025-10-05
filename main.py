@@ -260,7 +260,7 @@ async def run_weekly_job_test():
     target_user = await bot.fetch_user(RATTLEPOST)
     await target_user.send(summary_text)
 
-    date_str = datetime.now(DETROIT).strftime("%Y-%m-%d")
+    date_str = datetime.now(DETROIT).strftime("%d-%m-%Y")
 
     try:
         await poll_message.delete()
