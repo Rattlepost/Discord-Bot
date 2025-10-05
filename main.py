@@ -151,7 +151,7 @@ async def addGold(ctx, player_name: str, amount: int):
     conn.commit()
     conn.close()
 
-    await ctx.reply(f"{player_name} now has {new_gold} gold.")
+    await ctx.reply(f"Gave {amount} gold to {player_name}.")
 
 @bot.command()
 @commands.has_role(GM_ROLE)
@@ -176,7 +176,7 @@ async def rmGold(ctx, player_name: str, amount: int):
     conn.commit()
     conn.close()
 
-    await ctx.reply(f"{player_name} now has {new_gold} gold.")
+    await ctx.reply(f"Removed {amount} gold from {player_name}.")
 
 @bot.command()
 async def giveGold(ctx, receiver: str, amount: int):
