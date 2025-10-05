@@ -1,10 +1,7 @@
 from discord.ext import commands
 import discord
 import sqlite3
-from config import GM_ROLE, DM_HUSH_HUT
-
-PLAYER_INFO_PATH = "player_info.db"      
-PLAYER_INFO_TABLE_NAME = "player_info"
+from config import GM_ROLE, DM_HUSH_HUT, PLAYER_INFO_PATH, PLAYER_INFO_TABLE_NAME
 
 class PlayerInfo(commands.Cog, name="Player Info"):
     '''Commands for player info: level, gold, quest points.'''
