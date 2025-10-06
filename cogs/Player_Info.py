@@ -28,7 +28,6 @@ class PlayerInfo(commands.Cog, name="Player Info"):
             await self.player_info(ctx, player_name=player_name, type="USER")
         else:
             await ctx.reply("You can only view your own info. GMs can view anyone's info.")
-
     async def player_info(self, ctx, player_name: str, type: str):
         conn = self.get_db_connection(PLAYER_INFO_PATH)
         if not conn:
@@ -160,6 +159,125 @@ class PlayerInfo(commands.Cog, name="Player Info"):
             f"💰 Trade complete!\n"
             f"- {giver} → {receiver}: {amount} gold\n"
         )
+
+    @commands.command()
+    @commands.has_role(GM_ROLE)
+    async def levelUp(self, ctx, player_name: str):
+        """Increase a player's level by 1. Must have adequate QP. GM only."""
+        conn = self.get_db_connection(PLAYER_INFO_PATH)
+        cur = conn.cursor()
+
+        # Get current level and QP once
+        cur.execute(
+            f"SELECT LEVEL, QUEST_POINTS FROM {PLAYER_INFO_TABLE_NAME} WHERE PLAYER = ?",
+            (player_name,)
+        )
+        row = cur.fetchone()
+
+        if not row:
+            await ctx.reply(f"Player `{player_name}` not found.")
+            conn.close()
+            return
+
+        level = row[0]
+        quest_points = row[1]
+        new_level = level + 1
+        cost = new_level  # cost to level up = new level (adjust if your rule is different)
+
+        if quest_points < cost:
+            await ctx.reply(
+                f"{player_name} doesn’t have enough quest points to level up.\n"
+                f"(QP: {quest_points}, Needed: {cost}, Current Level: {level})"
+            )
+            conn.close()
+            return
+
+        new_qp = quest_points - cost
+
+        # Update both fields in one transaction
+        cur.execute(
+            f"UPDATE {PLAYER_INFO_TABLE_NAME} SET LEVEL = ?, QUEST_POINTS = ? WHERE PLAYER = ?",
+            (new_level, new_qp, player_name)
+        )
+        conn.commit()
+        conn.close()
+
+        await ctx.reply(
+            f"{player_name} has leveled up to **Level {new_level}**!\n"
+            f"QP spent: {cost} • QP remaining: {new_qp}"
+    )
+
+    @commands.command()
+    @commands.has_role(GM_ROLE)
+    async def addQP(self, ctx, player_name: str, amount: int = 1):
+        '''Add quest points to a player's total. GM only.'''
+
+        conn = self.get_db_connection(PLAYER_INFO_PATH)
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT QUEST_POINTS FROM {PLAYER_INFO_TABLE_NAME} WHERE PLAYER = ?", (player_name,))
+        row = cur.fetchone()
+
+        if not row:
+            await ctx.reply(f"Player `{player_name}` not found.")
+            conn.close()
+            return
+
+        new_qp = row[0] + amount
+        cur.execute(f"UPDATE {PLAYER_INFO_TABLE_NAME} SET QUEST_POINTS = ? WHERE PLAYER = ?", (new_qp, player_name))
+        conn.commit()
+        conn.close()
+
+        await ctx.reply(f"Gave {amount} quest points to {player_name}.")
+
+    @commands.command()
+    @commands.has_role(GM_ROLE)
+    async def addPlayer(self, ctx, player_name: str, level: int = 2):
+        """Add a new player with options for level.
+        Gold defaults to 10, Quest Points default to 0.
+        """
+
+        conn = self.get_db_connection(PLAYER_INFO_PATH)
+        cur = conn.cursor()
+
+        # check if already exists
+        cur.execute(
+            f"SELECT 1 FROM {PLAYER_INFO_TABLE_NAME} WHERE PLAYER = ?",
+            (player_name,)
+        )
+        if cur.fetchone():
+            await ctx.reply(f"Player `{player_name}` already exists.")
+            conn.close()
+            return
+
+        # insert new row
+        cur.execute(
+            f"INSERT INTO {PLAYER_INFO_TABLE_NAME} (PLAYER, LEVEL, GOLD, QUEST_POINTS) VALUES (?, ?, ?, ?)",
+            (player_name, level, 10, 0)
+        )
+        conn.commit()
+        conn.close()
+
+        await ctx.reply(f"Added `{player_name}` at Level {level}, 10 gold, 0 quest points.")
+
+    @commands.command()
+    @commands.has_role(GM_ROLE)
+    async def rmPlayer(self, ctx, player_name: str):
+        """Remove a player from the database. GM only."""
+        conn = self.get_db_connection(PLAYER_INFO_PATH)
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT 1 FROM {PLAYER_INFO_TABLE_NAME} WHERE PLAYER = ?", (player_name,))
+        if not cur.fetchone():
+            await ctx.reply(f"Player `{player_name}` not found.")
+            conn.close()
+            return
+
+        cur.execute(f"DELETE FROM {PLAYER_INFO_TABLE_NAME} WHERE PLAYER = ?", (player_name,))
+        conn.commit()
+        conn.close()
+
+        await ctx.reply(f"Removed player `{player_name}` from the database.")
 
 
 async def setup(bot):
