@@ -77,10 +77,10 @@ class Quests(commands.Cog, name="Quests"):
                 ROWID AS id,
                 NAME,
                 TYPE,
-                substr(COALESCE(DESCRIPTION, ''), 1, 200) AS blurb
+                substr(COALESCE(DESCRIPTION, ''), 1, 500) AS blurb
             FROM {QUEST_BOARD_TABLE}
             ORDER BY ROWID ASC
-            LIMIT 10
+            LIMIT 20
         """)
         rows = cur.fetchall()
         conn.close()
