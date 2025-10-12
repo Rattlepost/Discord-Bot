@@ -39,6 +39,7 @@ async def on_message(message):
 async def setup_hook():
     await bot.load_extension("cogs.player_info")
     await bot.load_extension("cogs.admin_commands")
+    await bot.load_extension("cogs.quests")
 
 
 # Runs the bot

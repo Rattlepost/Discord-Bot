@@ -9,10 +9,11 @@ DATE_FORMAT = "%m-%d-%Y"
 
 
 # SQLite
-PLAYER_QUEST_ITEMS_PATH = "player_quest_items.db"
-PLAYER_QUEST_TABLE_NAME = "player_quest_items"
-PLAYER_INFO_PATH = "player_info.db"      
-PLAYER_INFO_TABLE_NAME = "player_info"
+DATABASE_PATH = "database.db"
+
+PLAYER_INFO_TABLE = "player_info"
+QUEST_BOARD_TABLE = "quest_board"
+
 
 
 # Users
