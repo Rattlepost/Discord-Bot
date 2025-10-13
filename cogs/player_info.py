@@ -65,6 +65,64 @@ class PlayerInfo(commands.Cog, name="Player Info"):
         cur.close()
         conn.close()
 
+@commands.command(name="players")
+async def players(self, ctx):
+    """
+    Show a summary of all players.
+    GMs see everyone; regular users just see the list of names.
+    Usage:
+      !players
+    """
+    conn = self.get_db_connection(DATABASE_PATH)
+    if not conn:
+        await ctx.reply("Database connection failed.")
+        return
+
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(f"SELECT PLAYER, LEVEL, GOLD, QUEST_POINTS FROM {PLAYER_INFO_TABLE} ORDER BY PLAYER ASC")
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.reply("No players found in the database.")
+        return
+
+    # Determine if user is a GM
+    rq_role = discord.utils.get(ctx.author.roles, id=GM_ROLE)
+    is_gm = rq_role is not None
+
+    embed = discord.Embed(
+        title="🏰 Player Roster",
+        color=discord.Color.purple()
+    )
+
+    # For each player in the table
+    for r in rows:
+        player = r["PLAYER"]
+        level = r["LEVEL"]
+        gold = r["GOLD"]
+        qp = r["QUEST_POINTS"]
+
+        if is_gm:
+            # GMs get full details
+            embed.add_field(
+                name=f"{player}",
+                value=f"Lvl {level} | 💰 {gold}g | 🧭 {qp} QP",
+                inline=False
+            )
+        else:
+            # Regular users only see player names
+            embed.add_field(
+                name=f"{player}",
+                value="_Hidden (GM-only data)_",
+                inline=False
+            )
+
+    embed.set_footer(text="Use !info <your name> to see your own details.")
+    await ctx.reply(embed=embed, mention_author=False)
+
+    
     @commands.command()
     @commands.has_role(GM_ROLE)
     async def addGold(self, ctx, player_name: str, amount: int):
