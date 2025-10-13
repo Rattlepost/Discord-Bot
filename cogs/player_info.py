@@ -65,7 +65,7 @@ class PlayerInfo(commands.Cog, name="Player Info"):
         cur.close()
         conn.close()
 
-@commands.command(name="players")
+@commands.command()
 async def players(self, ctx):
     """
     Show a summary of all players.
