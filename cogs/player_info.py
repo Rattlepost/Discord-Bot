@@ -2,257 +2,575 @@ from discord.ext import commands
 import discord
 import sqlite3
 from config import GM_ROLE, DM_HUSH_HUT, DATABASE_PATH, PLAYER_INFO_TABLE
+import math
+
+# =========================
+# Currency helpers & schema
+# =========================
+
+# Base-10 denominations: 1 gp = 10 sp = 100 cp
+DENOMS = {"gp": 100, "sp": 10, "cp": 1}
+
+def _parse_unit(unit: str) -> str:
+    u = (unit or "").lower().strip()
+    if u in ("g", "gp"): return "gp"
+    if u in ("s", "sp"): return "sp"
+    if u in ("c", "cp"): return "cp"
+    raise ValueError("Unit must be gp, sp, or cp")
+
+def _to_cp(gp: int, sp: int, cp: int) -> int:
+    return gp * 100 + sp * 10 + cp
+
+def _from_cp(total_cp: int) -> tuple[int, int, int]:
+    if total_cp < 0:
+        raise ValueError("Negative currency")
+    gp = total_cp // 100
+    rem = total_cp % 100
+    sp = rem // 10
+    cp = rem % 10
+    return gp, sp, cp
+
+def _ensure_currency_columns(conn, table: str):
+    """Adds SILVER and COPPER columns to PLAYER_INFO_TABLE if missing (idempotent)."""
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = {r[1].upper() for r in cur.fetchall()}
+    if "SILVER" not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN SILVER INTEGER NOT NULL DEFAULT 0;")
+    if "COPPER" not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN COPPER INTEGER NOT NULL DEFAULT 0;")
+    conn.commit()
+
+def _get_player_row(cur, player_name: str):
+    cur.execute(
+        f"SELECT PLAYER, LEVEL, GOLD, SILVER, COPPER, QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?",
+        (player_name,)
+    )
+    return cur.fetchone()
+
+# ============
+# Player Cog
+# ============
 
 class PlayerInfo(commands.Cog, name="Player Info"):
-    '''Commands for player info: level, gold, quest points.'''
+    """Commands for player info: level, gold/silver/copper, quest points."""
 
     def __init__(self, bot):
         self.bot = bot
+        # Run a safe migration at startup to add SILVER/COPPER if missing
+        conn = self.get_db_connection(DATABASE_PATH)
+        if conn:
+            try:
+                _ensure_currency_columns(conn, PLAYER_INFO_TABLE)
+            finally:
+                conn.close()
 
     def get_db_connection(self, db_path: str):
         try:
             conn = sqlite3.connect(db_path, timeout=5)
-            conn.row_factory = sqlite3.Row  # access columns by name
+            conn.row_factory = sqlite3.Row
             return conn
         except sqlite3.Error:
             return None
 
+    # ----------------
+    # Info & Roster
+    # ----------------
+
     @commands.command()
     async def info(self, ctx, *, player_name: str):
-        '''Get player info. Users can only view their own.'''
+        """Get player info. Users can only view their own."""
         requester = str(ctx.author.display_name)
         rq_role = discord.utils.get(ctx.author.roles, id=GM_ROLE)
         if rq_role is not None:
-            await self.player_info(ctx, player_name=player_name, type="GM")
+            await self.player_info(ctx, player_name=player_name, view_type="GM")
         elif requester == player_name:
-            await self.player_info(ctx, player_name=player_name, type="USER")
+            await self.player_info(ctx, player_name=player_name, view_type="USER")
         else:
             await ctx.reply("You can only view your own info. GMs can view anyone's info.")
-    async def player_info(self, ctx, player_name: str, type: str):
+
+    async def player_info(self, ctx, player_name: str, view_type: str):
         conn = self.get_db_connection(DATABASE_PATH)
         if not conn:
             await ctx.reply("Database connection failed. See logs for details.")
             return
-        
+
         cur = conn.cursor()
-        sql = f"SELECT LEVEL, GOLD, QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?"
-        cur.execute(sql, (player_name,))
+        cur.execute(
+            f"SELECT LEVEL, GOLD, SILVER, COPPER, QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?",
+            (player_name,)
+        )
         row = cur.fetchone()
+        conn.close()
 
         if row is None:
             await ctx.reply(f"No player named `{player_name}` found.")
             return
 
-        level = row["LEVEL"]
-        gold = row["GOLD"]
-        quest_points = row["QUEST_POINTS"]
+        embed = discord.Embed(title=f"{player_name}", color=discord.Color.blue())
+        embed.add_field(name="Level", value=str(row["LEVEL"]), inline=True)
+        embed.add_field(name="Gold", value=f"{row['GOLD']} gp", inline=True)
+        embed.add_field(name="Silver", value=f"{row['SILVER']} sp", inline=True)
+        embed.add_field(name="Copper", value=f"{row['COPPER']} cp", inline=True)
+        embed.add_field(name="QP", value=str(row["QUEST_POINTS"]), inline=True)
 
-        embed = discord.Embed(
-            title=f"{player_name}",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="Level", value=str(level), inline=True)
-        embed.add_field(name="Gold", value=str(gold), inline=True)
-        embed.add_field(name="QP", value=str(quest_points), inline=True)
-
-        if type == "GM":
+        if view_type == "GM":
             channel = self.bot.get_channel(DM_HUSH_HUT)
             await channel.send(embed=embed)
         else:
             await ctx.author.send(embed=embed)
             await ctx.reply("I've sent your info in a DM!")
 
-        cur.close()
-        conn.close()
-
-    @commands.command()
+    @commands.command(name="players")
     async def players(self, ctx):
         """
         Show a summary of all players.
-        GMs see everyone; regular users just see the list of names.
-        Usage:
-          !players
+        GMs see exact stored balances; regular users see names only.
         """
         conn = self.get_db_connection(DATABASE_PATH)
         if not conn:
             await ctx.reply("Database connection failed.")
             return
-    
-        conn.row_factory = sqlite3.Row
+
         cur = conn.cursor()
-        cur.execute(f"SELECT PLAYER, LEVEL, GOLD, QUEST_POINTS FROM {PLAYER_INFO_TABLE} ORDER BY PLAYER ASC")
+        cur.execute(
+            f"SELECT PLAYER, LEVEL, GOLD, SILVER, COPPER, QUEST_POINTS "
+            f"FROM {PLAYER_INFO_TABLE} "
+            f"ORDER BY PLAYER ASC"
+        )
         rows = cur.fetchall()
         conn.close()
-    
+
         if not rows:
             await ctx.reply("No players found in the database.")
             return
-    
-        # Determine if user is a GM
-        rq_role = discord.utils.get(ctx.author.roles, id=GM_ROLE)
-        is_gm = rq_role is not None
-    
-        embed = discord.Embed(
-            title="🏰 Player Roster",
-            color=discord.Color.purple()
-        )
-    
-        # For each player in the table
+
+        is_gm = discord.utils.get(ctx.author.roles, id=GM_ROLE) is not None
+
+        embed = discord.Embed(title="🏰 Player Roster", color=discord.Color.purple())
+
         for r in rows:
-            player = r["PLAYER"]
-            level = r["LEVEL"]
-            gold = r["GOLD"]
-            qp = r["QUEST_POINTS"]
-    
             if is_gm:
-                # GMs get full details
+                # Show EXACT stored counts (no normalization)
                 embed.add_field(
-                    name=f"{player}",
-                    value=f"Lvl {level} | 💰 {gold}g | 🧭 {qp} QP",
+                    name=r["PLAYER"],
+                    value=(
+                        f"Lvl {r['LEVEL']} | "
+                        f"💰 {r['GOLD']}gp {r['SILVER']}sp {r['COPPER']}cp | "
+                        f"🧭 {r['QUEST_POINTS']} QP"
+                    ),
                     inline=False
                 )
             else:
-                # Regular users only see player names
                 embed.add_field(
-                    name=f"{player}",
+                    name=r["PLAYER"],
                     value="_Hidden (GM-only data)_",
                     inline=False
                 )
-    
-        embed.set_footer(text="Use !info <your name> to see your own details.")
+
+        embed.set_footer(text="Use !info <your name> to see your details.")
         await ctx.reply(embed=embed, mention_author=False)
 
-    
+
+    # ----------------
+    # Currency Admin (GM)
+    # ----------------
+
     @commands.command()
     @commands.has_role(GM_ROLE)
-    async def addGold(self, ctx, player_name: str, amount: int):
-        '''Add gold to a player's total. GM only.'''
-        conn = self.get_db_connection(DATABASE_PATH)
-        cur = conn.cursor()
-
-        cur.execute(f"SELECT GOLD FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
-        row = cur.fetchone()
-
-        if not row:
-            await ctx.reply(f"Player `{player_name}` not found.")
-            conn.close()
+    async def addMoney(self, ctx, player_name: str, amount: int, unit: str = "gp"):
+        """Usage: !addMoney <player> <amount> [gp|sp|cp]"""
+        try:
+            unit = _parse_unit(unit)
+        except ValueError as e:
+            await ctx.reply(str(e))
             return
 
-        new_gold = row[0] + amount
-        cur.execute(f"UPDATE {PLAYER_INFO_TABLE} SET GOLD = ? WHERE PLAYER = ?", (new_gold, player_name))
+        conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
+        cur = conn.cursor()
+
+        row = _get_player_row(cur, player_name)
+        if not row:
+            conn.close()
+            await ctx.reply(f"Player `{player_name}` not found.")
+            return
+
+        total_cp = _to_cp(row["GOLD"], row["SILVER"], row["COPPER"]) + amount * DENOMS[unit]
+        gp, sp, cp = _from_cp(total_cp)
+        cur.execute(
+            f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
+            (gp, sp, cp, player_name)
+        )
         conn.commit()
         conn.close()
 
-        await ctx.reply(f"Gave {amount} gold to {player_name}.")
+        await ctx.reply(f"Added {amount}{unit} to {player_name} → {gp}gp {sp}sp {cp}cp")
+
+    @commands.command()
+    @commands.has_role(GM_ROLE)
+    async def rmMoney(self, ctx, player_name: str, amount: int, unit: str = "gp"):
+        """Usage: !rmMoney <player> <amount> [gp|sp|cp]"""
+        try:
+            unit = _parse_unit(unit)
+        except ValueError as e:
+            await ctx.reply(str(e))
+            return
+
+        conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
+        cur = conn.cursor()
+
+        row = _get_player_row(cur, player_name)
+        if not row:
+            conn.close()
+            await ctx.reply(f"Player `{player_name}` not found.")
+            return
+
+        total_cp = _to_cp(row["GOLD"], row["SILVER"], row["COPPER"])
+        delta = amount * DENOMS[unit]
+        if total_cp < delta:
+            conn.close()
+            await ctx.reply(f"❌ {player_name} doesn’t have enough funds to remove {amount}{unit}.")
+            return
+
+        total_cp -= delta
+        gp, sp, cp = _from_cp(total_cp)
+        cur.execute(
+            f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
+            (gp, sp, cp, player_name)
+        )
+        conn.commit()
+        conn.close()
+
+        await ctx.reply(f"Removed {amount}{unit} from {player_name} → {gp}gp {sp}sp {cp}cp")
+
+    # Back-compat aliases (gold-only)
+    @commands.command()
+    @commands.has_role(GM_ROLE)
+    async def addGold(self, ctx, player_name: str, amount: int):
+        """Alias: gold-only add. Usage: !addGold <player> <amount>"""
+        await self.addMoney(ctx, player_name, amount, "gp")
 
     @commands.command()
     @commands.has_role(GM_ROLE)
     async def rmGold(self, ctx, player_name: str, amount: int):
-        '''Remove gold from a player's total. GM only.'''
+        """Alias: gold-only remove. Usage: !rmGold <player> <amount>"""
+        await self.rmMoney(ctx, player_name, amount, "gp")
+
+    # ----------------
+    # Player Trades
+    # ----------------
+
+    @commands.command()
+    async def giveMoney(self, ctx, receiver: str, amount: int, unit: str = "gp"):
+        """
+        Transfer currency with auto-conversion (make change) if needed.
+        Examples:
+        !giveMoney Alice 15 sp  (will break gp or combine cp if needed)
+        !giveMoney Bob 3 gp     (will combine sp/cp to gp if exact multiples exist)
+        """
+        try:
+            unit = _parse_unit(unit)  # gp|sp|cp
+        except ValueError as e:
+            await ctx.reply(str(e))
+            return
+        if amount <= 0:
+            await ctx.reply("Amount must be positive.")
+            return
+
+        giver = str(ctx.author.display_name)
+        if giver == receiver:
+            await ctx.reply("You can’t pay yourself.")
+            return
+
         conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
         cur = conn.cursor()
 
-        cur.execute(f"SELECT GOLD FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
-        row = cur.fetchone()
-
-        if not row:
-            await ctx.reply(f"Player `{player_name}` not found.")
+        # Fetch both rows
+        cur.execute(
+            f"SELECT PLAYER, GOLD, SILVER, COPPER FROM {PLAYER_INFO_TABLE} WHERE PLAYER IN (?, ?)",
+            (giver, receiver)
+        )
+        rows = {r["PLAYER"]: r for r in cur.fetchall()}
+        if giver not in rows:
             conn.close()
+            await ctx.reply(f"Giver `{giver}` not found in the database.")
+            return
+        if receiver not in rows:
+            conn.close()
+            await ctx.reply(f"Receiver `{receiver}` not found in the database.")
             return
 
-        new_gold = row[0] - amount
-        if new_gold < 0:
-            await ctx.reply(f"Cannot remove more than {amount} gold from {player_name}.")
+        g = rows[giver]
+        r = rows[receiver]
+
+        # Work on mutable copies
+        g_counts = {"gp": g["GOLD"], "sp": g["SILVER"], "cp": g["COPPER"]}
+        r_counts = {"gp": r["GOLD"], "sp": r["SILVER"], "cp": r["COPPER"]}
+
+        # Quick sanity: do they have enough total value (in cp)?
+        need_cp = amount * DENOMS[unit]
+        have_cp = g_counts["gp"]*DENOMS["gp"] + g_counts["sp"]*DENOMS["sp"] + g_counts["cp"]
+        if have_cp < need_cp:
             conn.close()
+            await ctx.reply(f"❌ You don’t have enough total funds to send {amount}{unit}.")
             return
-        cur.execute(f"UPDATE {PLAYER_INFO_TABLE} SET GOLD = ? WHERE PLAYER = ?", (new_gold, player_name))
-        conn.commit()
+
+        # Helper: make change to ensure g_counts[unit] >= amount.
+        # We try (a) break higher down, then (b) combine lower up where possible.
+        def ensure_units(target: str, amt: int, counts: dict) -> list[str]:
+            notes = []
+            def break_gp_to_sp(u):
+                # 1 gp -> 10 sp
+                use = min(math.ceil(u/10), counts["gp"])
+                if use > 0:
+                    counts["gp"] -= use
+                    made = use * 10
+                    counts["sp"] += made
+                    notes.append(f"broke {use}gp → {made}sp")
+
+            def break_sp_to_cp(u):
+                # 1 sp -> 10 cp
+                use = min(math.ceil(u/10), counts["sp"])
+                if use > 0:
+                    counts["sp"] -= use
+                    made = use * 10
+                    counts["cp"] += made
+                    notes.append(f"broke {use}sp → {made}cp")
+
+            def combine_cp_to_sp(u):
+                # 10 cp -> 1 sp
+                possible = counts["cp"] // 10
+                use = min(u, possible)
+                if use > 0:
+                    counts["cp"] -= use * 10
+                    counts["sp"] += use
+                    notes.append(f"combined {use*10}cp → {use}sp")
+
+            def combine_sp_to_gp(u):
+                # 10 sp -> 1 gp
+                possible = counts["sp"] // 10
+                use = min(u, possible)
+                if use > 0:
+                    counts["sp"] -= use * 10
+                    counts["gp"] += use
+                    notes.append(f"combined {use*10}sp → {use}gp")
+
+            if target == "cp":
+                # Need cp: break sp first, then gp; also combine cp from sp if possible.
+                deficit = max(0, amt - counts["cp"])
+                if deficit > 0:
+                    break_sp_to_cp(deficit)
+                    deficit = max(0, amt - counts["cp"])
+                if deficit > 0:
+                    need_gp = math.ceil(deficit / 100)
+                    if need_gp > 0 and counts["gp"] > 0:
+                        use = min(need_gp, counts["gp"])
+                        counts["gp"] -= use
+                        made = use * 100
+                        counts["cp"] += made
+                        notes.append(f"broke {use}gp → {made}cp")
+
+            elif target == "sp":
+                # Need sp: break gp down; if still short, combine cp up to sp
+                deficit = max(0, amt - counts["sp"])
+                if deficit > 0:
+                    break_gp_to_sp(deficit)
+                    deficit = max(0, amt - counts["sp"])
+                if deficit > 0:
+                    combine_cp_to_sp(deficit)  # only exact multiples are combined
+
+            elif target == "gp":
+                # Need gp: combine sp to gp, then cp to sp then sp to gp.
+                deficit = max(0, amt - counts["gp"])
+                if deficit > 0:
+                    combine_sp_to_gp(deficit)
+                    deficit = max(0, amt - counts["gp"])
+                if deficit > 0:
+                    # First roll cp up into sp, then sp into gp
+                    combine_cp_to_sp(deficit * 10)  # we might need up to deficit*10 sp
+                    combine_sp_to_gp(deficit)
+            return notes
+
+        notes = ensure_units(unit, amount, g_counts)
+
+        # After making change, ensure we actually have enough of the requested unit
+        if g_counts[unit] < amount:
+            conn.close()
+            await ctx.reply(f"❌ Even after making change, not enough {unit} to send {amount}{unit}.")
+            return
+
+        # Apply the transfer in the requested unit (no normalization)
+        g_counts[unit] -= amount
+        r_counts[unit] += amount
+
+        try:
+            cur.execute("BEGIN IMMEDIATE")
+            cur.execute(
+                f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
+                (g_counts["gp"], g_counts["sp"], g_counts["cp"], giver)
+            )
+            cur.execute(
+                f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
+                (r_counts["gp"], r_counts["sp"], r_counts["cp"], receiver)
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            await ctx.reply(f"Transfer failed: {e}")
+            return
+
         conn.close()
 
-        await ctx.reply(f"Removed {amount} gold from {player_name}.")
+        # Build a friendly summary (include any change-making steps)
+        change_line = ""
+        if notes:
+            change_line = "  • Change made: " + "; ".join(notes) + "\n"
+
+        await ctx.send(
+            "💸 Transfer complete!\n"
+            f"- {giver} → {receiver}: {amount}{unit}\n"
+            f"{change_line}"
+            f"- New balances:\n"
+            f"  • {giver}: {g_counts['gp']}gp {g_counts['sp']}sp {g_counts['cp']}cp\n"
+            f"  • {receiver}: {r_counts['gp']}gp {r_counts['sp']}sp {r_counts['cp']}cp"
+        )   
 
     @commands.command()
     async def giveGold(self, ctx, receiver: str, amount: int):
-        '''Trade gold with another player.'''
+        """Alias: gold-only transfer."""
+        await self.giveMoney(ctx, receiver, amount, "gp")
+
+
+    # ----------------
+    # Conversion
+    # ----------------
+
+    @commands.command()
+    async def convert(self, ctx, player_name: str, amount: int, from_unit: str, to_unit: str):
+        """
+        Convert a player's currency by moving units, without normalizing.
+        Examples:
+        !convert Gorn 10 gp sp  -> -10 gp, +100 sp
+        !convert Gorn 30 sp gp  -> -30 sp, +3 gp (requires exact multiple of 10sp)
+        """
+        try:
+            f = _parse_unit(from_unit)
+            t = _parse_unit(to_unit)
+        except ValueError as e:
+            await ctx.reply(str(e))
+            return
+
+        if f == t:
+            await ctx.reply("From and to units are the same.")
+            return
+        if amount <= 0:
+            await ctx.reply("Amount must be positive.")
+            return
+
         conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
         cur = conn.cursor()
-        giver = str(ctx.author.display_name)  # the command user’s server name
 
-        # get giver row
-        cur.execute(f"SELECT GOLD FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (giver,))
-        giver_row = cur.fetchone()
-        if not giver_row:
-            await ctx.reply(f"Giver `{giver}` not found in the database.")
+        cur.execute(
+            f"SELECT GOLD, SILVER, COPPER FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?",
+            (player_name,)
+        )
+        row = cur.fetchone()
+        if not row:
             conn.close()
+            await ctx.reply(f"Player `{player_name}` not found.")
             return
 
-        giver_gold = giver_row[0]
+        counts = {
+            "gp": row["GOLD"],
+            "sp": row["SILVER"],
+            "cp": row["COPPER"],
+        }
 
-        # get receiver row
-        cur.execute(f"SELECT GOLD FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (receiver,))
-        receiver_row = cur.fetchone()
-        if not receiver_row:
-            await ctx.reply(f"Receiver `{receiver}` not found in the database.")
+        # Ensure enough source units
+        if counts[f] < amount:
             conn.close()
+            await ctx.reply(f"❌ {player_name} doesn’t have {amount}{f} to convert.")
             return
 
-        receiver_gold = receiver_row[0]
+        # Compute how many target units we add
+        if DENOMS[f] > DENOMS[t]:
+            # moving down (gp->sp, sp->cp)
+            add_units = amount * (DENOMS[f] // DENOMS[t])
+        else:
+            # moving up (sp->gp, cp->sp, cp->gp) requires exact multiple
+            needed = DENOMS[t] // DENOMS[f]
+            if amount % needed != 0:
+                conn.close()
+                await ctx.reply(f"❌ To convert {f} → {t}, use multiples of {needed}{f}.")
+                return
+            add_units = amount // needed
 
-        # prevent negative
-        if giver_gold < amount:
-            await ctx.reply(f"❌ You don’t have enough gold to trade {amount}.")
-            conn.close()
-            return
+        # Apply unit move (no normalization)
+        counts[f] -= amount
+        counts[t] += add_units
 
-        # update both
-        new_giver_gold = giver_gold - amount
-        new_receiver_gold = receiver_gold + amount
-
-        cur.execute(f"UPDATE {PLAYER_INFO_TABLE} SET GOLD = ? WHERE PLAYER = ?", (new_giver_gold, giver))
-        cur.execute(f"UPDATE {PLAYER_INFO_TABLE} SET GOLD = ? WHERE PLAYER = ?", (new_receiver_gold, receiver))
+        cur.execute(
+            f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
+            (counts["gp"], counts["sp"], counts["cp"], player_name)
+        )
         conn.commit()
         conn.close()
 
-        await ctx.send(
-            f"💰 Trade complete!\n"
-            f"- {giver} → {receiver}: {amount} gold\n"
+        await ctx.reply(
+            f"Converted {amount}{f} → {add_units}{t} for {player_name} → "
+            f"{counts['gp']}gp {counts['sp']}sp {counts['cp']}cp"
         )
+
+
+
+    # ----------------
+    # Level & QP (kept as-is, minor tidy)
+    # ----------------
 
     @commands.command()
     @commands.has_role(GM_ROLE)
     async def levelUp(self, ctx, player_name: str):
         """Increase a player's level by 1. Must have adequate QP. GM only."""
         conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
         cur = conn.cursor()
 
-        # Get current level and QP once
-        cur.execute(
-            f"SELECT LEVEL, QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?",
-            (player_name,)
-        )
+        cur.execute(f"SELECT LEVEL, QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
         row = cur.fetchone()
-
         if not row:
-            await ctx.reply(f"Player `{player_name}` not found.")
             conn.close()
+            await ctx.reply(f"Player `{player_name}` not found.")
             return
 
-        level = row[0]
-        quest_points = row[1]
+        level = row["LEVEL"]
+        quest_points = row["QUEST_POINTS"]
         new_level = level + 1
-        cost = new_level  # cost to level up = new level (adjust if your rule is different)
+        cost = new_level  # adjust if your rule differs
 
         if quest_points < cost:
+            conn.close()
             await ctx.reply(
                 f"{player_name} doesn’t have enough quest points to level up.\n"
                 f"(QP: {quest_points}, Needed: {cost}, Current Level: {level})"
             )
-            conn.close()
             return
 
         new_qp = quest_points - cost
-
-        # Update both fields in one transaction
         cur.execute(
             f"UPDATE {PLAYER_INFO_TABLE} SET LEVEL = ?, QUEST_POINTS = ? WHERE PLAYER = ?",
             (new_level, new_qp, player_name)
@@ -263,72 +581,77 @@ class PlayerInfo(commands.Cog, name="Player Info"):
         await ctx.reply(
             f"{player_name} has leveled up to **Level {new_level}**!\n"
             f"QP spent: {cost} • QP remaining: {new_qp}"
-    )
+        )
 
     @commands.command()
     @commands.has_role(GM_ROLE)
     async def addQP(self, ctx, player_name: str, amount: int = 1):
-        '''Add quest points to a player's total. GM only.'''
-
+        """Add quest points to a player's total. GM only."""
         conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
         cur = conn.cursor()
 
         cur.execute(f"SELECT QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
         row = cur.fetchone()
-
         if not row:
-            await ctx.reply(f"Player `{player_name}` not found.")
             conn.close()
+            await ctx.reply(f"Player `{player_name}` not found.")
             return
 
-        new_qp = row[0] + amount
+        new_qp = row["QUEST_POINTS"] + amount
         cur.execute(f"UPDATE {PLAYER_INFO_TABLE} SET QUEST_POINTS = ? WHERE PLAYER = ?", (new_qp, player_name))
         conn.commit()
         conn.close()
 
         await ctx.reply(f"Gave {amount} quest points to {player_name}.")
 
+    # ----------------
+    # Player admin (unchanged behavior)
+    # ----------------
+
     @commands.command()
     @commands.has_role(GM_ROLE)
     async def addPlayer(self, ctx, player_name: str, level: int = 2):
-        """Add a new player with options for level.
-        Gold defaults to 10, Quest Points default to 0.
         """
-
+        Add a new player. Gold defaults to 10gp, Silver 0, Copper 0, QP 0.
+        """
         conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
         cur = conn.cursor()
 
-        # check if already exists
-        cur.execute(
-            f"SELECT 1 FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?",
-            (player_name,)
-        )
+        cur.execute(f"SELECT 1 FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
         if cur.fetchone():
-            await ctx.reply(f"Player `{player_name}` already exists.")
             conn.close()
+            await ctx.reply(f"Player `{player_name}` already exists.")
             return
 
-        # insert new row
         cur.execute(
-            f"INSERT INTO {PLAYER_INFO_TABLE} (PLAYER, LEVEL, GOLD, QUEST_POINTS) VALUES (?, ?, ?, ?)",
-            (player_name, level, 10, 0)
+            f"INSERT INTO {PLAYER_INFO_TABLE} (PLAYER, LEVEL, GOLD, SILVER, COPPER, QUEST_POINTS) VALUES (?, ?, ?, ?, ?, ?)",
+            (player_name, level, 10, 0, 0, 0)
         )
         conn.commit()
         conn.close()
 
-        await ctx.reply(f"Added `{player_name}` at Level {level}, 10 gold, 0 quest points.")
+        await ctx.reply(f"Added `{player_name}` at Level {level}, 10gp 0sp 0cp, 0 quest points.")
 
     @commands.command()
     @commands.has_role(GM_ROLE)
     async def rmPlayer(self, ctx, player_name: str):
         """Remove a player from the database. GM only."""
         conn = self.get_db_connection(DATABASE_PATH)
+        if not conn:
+            await ctx.reply("Database connection failed.")
+            return
         cur = conn.cursor()
 
         cur.execute(f"SELECT 1 FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
         if not cur.fetchone():
-            await ctx.reply(f"Player `{player_name}` not found.")
             conn.close()
+            await ctx.reply(f"Player `{player_name}` not found.")
             return
 
         cur.execute(f"DELETE FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
@@ -337,6 +660,9 @@ class PlayerInfo(commands.Cog, name="Player Info"):
 
         await ctx.reply(f"Removed player `{player_name}` from the database.")
 
+# --------------
+# Cog setup
+# --------------
 
 async def setup(bot):
     await bot.add_cog(PlayerInfo(bot))
