@@ -176,38 +176,88 @@ class PlayerInfo(commands.Cog, name="Player Info"):
     # Currency Admin (GM)
     # ----------------
 
+    from typing import List
+
     @commands.command()
     @commands.has_role(GM_ROLE)
-    async def addMoney(self, ctx, player_name: str, amount: int, unit: str = "gp"):
-        """Usage: !addMoney <player> <amount> [gp|sp|cp]"""
+    async def addMoney(self, ctx, *args):
+        """
+        Usage:
+        !addMoney <player1> [player2 ...] <amount> [gp|sp|cp]
+
+        Examples:
+        !addMoney Gorn 5 gp
+        !addMoney Gorn Glib Pat 10
+        !addMoney "Sir Tristan" "Lady Mave" 3 sp
+        """
+        # need at least: name + amount
+        if len(args) < 2:
+            await ctx.reply("Usage: !addMoney <player1> [player2 ...] <amount> [gp|sp|cp]")
+            return
+
+        # try to figure out if the *last* arg is a unit
+        maybe_unit = args[-1].lower()
+        has_unit = maybe_unit in ("g", "gp", "s", "sp", "c", "cp")
+
+        if has_unit:
+            unit_raw = maybe_unit
+            amount_str = args[-2]
+            name_parts = args[:-2]
+        else:
+            unit_raw = "gp"
+            amount_str = args[-1]
+            name_parts = args[:-1]
+
+        # parse amount
         try:
-            unit = _parse_unit(unit)
+            amount = int(amount_str)
+        except ValueError:
+            await ctx.reply("Amount must be an integer.")
+            return
+
+        # normalize unit
+        try:
+            unit = _parse_unit(unit_raw)  # your helper
         except ValueError as e:
             await ctx.reply(str(e))
+            return
+
+        # safety: must have at least one name
+        if not name_parts:
+            await ctx.reply("You must specify at least one player name.")
             return
 
         conn = self.get_db_connection(DATABASE_PATH)
         if not conn:
             await ctx.reply("Database connection failed.")
             return
+
         cur = conn.cursor()
 
-        row = _get_player_row(cur, player_name)
-        if not row:
-            conn.close()
-            await ctx.reply(f"Player `{player_name}` not found.")
-            return
+        results = []   # to show per-player outcome
+        for player_name in name_parts:
+            row = _get_player_row(cur, player_name)
+            if not row:
+                # don't early-return — just note the failure for this name
+                results.append(f"❌ `{player_name}` not found.")
+                continue
 
-        total_cp = _to_cp(row["GOLD"], row["SILVER"], row["COPPER"]) + amount * DENOMS[unit]
-        gp, sp, cp = _from_cp(total_cp)
-        cur.execute(
-            f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
-            (gp, sp, cp, player_name)
-        )
+            total_cp = _to_cp(row["GOLD"], row["SILVER"], row["COPPER"]) + amount * DENOMS[unit]
+            gp, sp, cp = _from_cp(total_cp)
+
+            cur.execute(
+                f"UPDATE {PLAYER_INFO_TABLE} SET GOLD=?, SILVER=?, COPPER=? WHERE PLAYER=?",
+                (gp, sp, cp, player_name)
+            )
+
+            results.append(f"✅ Added {amount}{unit} to `{player_name}` → {gp}gp {sp}sp {cp}cp")
+
         conn.commit()
         conn.close()
 
-        await ctx.reply(f"Added {amount}{unit} to {player_name} → {gp}gp {sp}sp {cp}cp")
+        # send a combined result
+        msg = "\n".join(results)
+        await ctx.reply(msg)
 
     @commands.command()
     @commands.has_role(GM_ROLE)
@@ -585,27 +635,63 @@ class PlayerInfo(commands.Cog, name="Player Info"):
 
     @commands.command()
     @commands.has_role(GM_ROLE)
-    async def addQP(self, ctx, player_name: str, amount: int = 1):
-        """Add quest points to a player's total. GM only."""
+    async def addQP(self, ctx, *args):
+        """
+        Usage:
+        !addQP <player1> [player2 ...] [amount]
+
+        Examples:
+        !addQP Gorn 3
+        !addQP Gorn Glib Pat 2
+        !addQP Gorn Glib
+        (Defaults to +1 QP if amount not specified)
+        """
+
+        # Must have at least one argument (name)
+        if len(args) < 1:
+            await ctx.reply("Usage: !addQP <player1> [player2 ...] [amount]")
+            return
+
+        # If the last argument looks like an integer, treat it as the amount
+        try:
+            amount = int(args[-1])
+            player_names = args[:-1]
+        except ValueError:
+            amount = 1
+            player_names = args
+
+        # Safety check
+        if not player_names:
+            await ctx.reply("You must specify at least one player name.")
+            return
+
         conn = self.get_db_connection(DATABASE_PATH)
         if not conn:
             await ctx.reply("Database connection failed.")
             return
         cur = conn.cursor()
 
-        cur.execute(f"SELECT QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
-        row = cur.fetchone()
-        if not row:
-            conn.close()
-            await ctx.reply(f"Player `{player_name}` not found.")
-            return
+        results = []
+        for player_name in player_names:
+            cur.execute(f"SELECT QUEST_POINTS FROM {PLAYER_INFO_TABLE} WHERE PLAYER = ?", (player_name,))
+            row = cur.fetchone()
 
-        new_qp = row["QUEST_POINTS"] + amount
-        cur.execute(f"UPDATE {PLAYER_INFO_TABLE} SET QUEST_POINTS = ? WHERE PLAYER = ?", (new_qp, player_name))
+            if not row:
+                results.append(f"❌ `{player_name}` not found.")
+                continue
+
+            new_qp = row["QUEST_POINTS"] + amount
+            cur.execute(
+                f"UPDATE {PLAYER_INFO_TABLE} SET QUEST_POINTS = ? WHERE PLAYER = ?",
+                (new_qp, player_name)
+            )
+            results.append(f"✅ Gave {amount} quest point(s) to `{player_name}` → Total: {new_qp}")
+
         conn.commit()
         conn.close()
 
-        await ctx.reply(f"Gave {amount} quest points to {player_name}.")
+        await ctx.reply("\n".join(results))
+
 
     # ----------------
     # Player admin (unchanged behavior)
